@@ -1,0 +1,82 @@
+name: Build Reels Audio iOS (.ipa)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Unsigned Reels Audio IPA
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          LATEST_XCODE=$(find /Applications -maxdepth 1 -name "Xcode*.app" | sort -V | tail -n 1)
+          if [ -n "$LATEST_XCODE" ]; then
+            echo "Selecting $LATEST_XCODE"
+            sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode Project & Stamp Build Number
+        run: |
+          xcodegen generate
+          BUILD_NUM=${{ github.run_number }}
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUM" Sources/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" Sources/Info.plist
+
+      - name: Build Archive (Unsigned)
+        run: |
+          xcodebuild archive \
+            -project ReelsAudio.xcodeproj \
+            -scheme ReelsAudio \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "build/ReelsAudio.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Verify Display Name & Package Payload into IPA
+        run: |
+          APP_PLIST="build/ReelsAudio.xcarchive/Products/Applications/ReelsAudio.app/Info.plist"
+          DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$APP_PLIST")
+          VERSION_STR=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
+          BUILD_STR=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+          echo "Verified App Display Name: $DISPLAY_NAME (v$VERSION_STR build $BUILD_STR)"
+          if [ "$DISPLAY_NAME" != "Reels Audio" ]; then
+            echo "ERROR: Expected CFBundleDisplayName 'Reels Audio', got '$DISPLAY_NAME'"
+            exit 1
+          fi
+
+          mkdir -p Payload
+          cp -r "build/ReelsAudio.xcarchive/Products/Applications/ReelsAudio.app" Payload/
+          zip -r -q "ReelsAudio.ipa" Payload
+          ls -lh ReelsAudio.ipa
+
+          {
+            echo "### 📱 Reels Audio iOS Build Succeeded"
+            echo "- **Tên hiển thị trên iPhone:** \`$DISPLAY_NAME\`"
+            echo "- **Bundle ID:** \`me.buongloi.reelsaudio\`"
+            echo "- **Phiên bản:** \`$VERSION_STR\` (Build \`$BUILD_STR\`)"
+            echo "- **Artifact tải về:** \`ReelsAudio-ipa\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ReelsAudio IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReelsAudio-ipa
+          path: ReelsAudio.ipa
+          retention-days: 30
